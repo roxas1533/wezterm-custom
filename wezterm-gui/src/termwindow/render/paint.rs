@@ -117,7 +117,7 @@ impl crate::TermWindow {
 
         // When post-process shaders are active, schedule continuous redraws
         // so that time-based shader effects animate smoothly
-        if self.post_process.is_some() {
+        if self.post_process.is_some() || self.background_post_process.is_some() {
             let mut anim = self.has_animation.borrow_mut();
             let next = Instant::now() + Duration::from_millis(16);
             match *anim {

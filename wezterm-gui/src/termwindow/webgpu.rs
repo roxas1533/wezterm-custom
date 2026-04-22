@@ -29,7 +29,11 @@ pub struct PostProcessUniform {
     pub time: f32,
     pub time_delta: f32,
     pub frame: u32,
-    pub _padding: [u32; 3],
+    pub cell_width: f32,
+    pub cursor_pos: [f32; 2],
+    pub cursor_prev_pos: [f32; 2],
+    pub cursor_move_time: f32,
+    pub cell_height: f32,
 }
 
 /// State for the post-processing shader pipeline.
@@ -61,9 +65,11 @@ struct PostProcessUniform {
     time: f32,
     time_delta: f32,
     frame: u32,
-    _padding_0: u32,
-    _padding_1: u32,
-    _padding_2: u32,
+    cell_width: f32,
+    cursor_pos: vec2<f32>,
+    cursor_prev_pos: vec2<f32>,
+    cursor_move_time: f32,
+    cell_height: f32,
 };
 
 struct VertexOutput {
@@ -1090,8 +1096,8 @@ mod tests {
     fn test_postprocess_uniform_layout() {
         assert_eq!(
             std::mem::size_of::<PostProcessUniform>(),
-            32,
-            "PostProcessUniform must be 32 bytes for GPU alignment"
+            48,
+            "PostProcessUniform must be 48 bytes for GPU alignment"
         );
     }
 

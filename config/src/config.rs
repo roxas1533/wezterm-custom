@@ -566,6 +566,12 @@ pub struct Config {
     #[dynamic(default)]
     pub custom_shaders: Vec<PathBuf>,
 
+    /// Paths to custom post-processing fragment shaders (WGSL) applied
+    /// only to the background layer, before text is drawn on top.
+    /// Relative paths are resolved relative to the config file directory.
+    #[dynamic(default)]
+    pub background_shaders: Vec<PathBuf>,
+
     /// Only works on MacOS
     #[dynamic(default)]
     pub macos_window_background_blur: i64,
@@ -1337,6 +1343,13 @@ impl Config {
             }
 
             for shader_path in &mut cfg.custom_shaders {
+                if !shader_path.is_absolute() {
+                    let dir = config_dir.join(&shader_path);
+                    *shader_path = dir;
+                }
+            }
+
+            for shader_path in &mut cfg.background_shaders {
                 if !shader_path.is_absolute() {
                     let dir = config_dir.join(&shader_path);
                     *shader_path = dir;

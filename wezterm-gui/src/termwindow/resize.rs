@@ -57,10 +57,10 @@ impl super::TermWindow {
             webgpu.resize(dimensions);
 
             // Recreate post-process textures at the new dimensions
+            let width = dimensions.pixel_width as u32;
+            let height = dimensions.pixel_height as u32;
             let mut drop_post_process = false;
             if let Some(pp) = self.post_process.as_mut() {
-                let width = dimensions.pixel_width as u32;
-                let height = dimensions.pixel_height as u32;
                 if width > 0 && height > 0 {
                     if !pp.resize(&webgpu.device, width, height) {
                         log::warn!("postprocess: dropping state due to failed resize");
@@ -70,6 +70,18 @@ impl super::TermWindow {
             }
             if drop_post_process {
                 self.post_process = None;
+            }
+            let mut drop_bg_post_process = false;
+            if let Some(bg_pp) = self.background_post_process.as_mut() {
+                if width > 0 && height > 0 {
+                    if !bg_pp.resize(&webgpu.device, width, height) {
+                        log::warn!("postprocess: dropping background state due to failed resize");
+                        drop_bg_post_process = true;
+                    }
+                }
+            }
+            if drop_bg_post_process {
+                self.background_post_process = None;
             }
         }
 

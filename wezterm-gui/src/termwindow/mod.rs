@@ -463,6 +463,7 @@ pub struct TermWindow {
     gl: Option<Rc<glium::backend::Context>>,
     webgpu: Option<Rc<WebGpuState>>,
     post_process: Option<PostProcessState>,
+    background_post_process: Option<PostProcessState>,
     last_post_process_time: Option<Instant>,
     post_process_frame: u32,
     config_subscription: Option<config::ConfigSubscription>,
@@ -692,6 +693,7 @@ impl TermWindow {
             gl: None,
             webgpu: None,
             post_process: None,
+            background_post_process: None,
             last_post_process_time: None,
             post_process_frame: 0,
             window: None,
@@ -1857,6 +1859,7 @@ impl TermWindow {
         use crate::termwindow::webgpu::PostProcessState;
 
         let shader_paths = &self.config.custom_shaders;
+        let bg_shader_paths = &self.config.background_shaders;
 
         if shader_paths.is_empty() {
             if self.post_process.is_some() {
@@ -1865,6 +1868,16 @@ impl TermWindow {
                 self.last_post_process_time = None;
                 self.post_process_frame = 0;
             }
+        }
+
+        if bg_shader_paths.is_empty() {
+            if self.background_post_process.is_some() {
+                log::info!("postprocess: background_shaders cleared, removing background post-process pipeline");
+                self.background_post_process = None;
+            }
+        }
+
+        if shader_paths.is_empty() && bg_shader_paths.is_empty() {
             return;
         }
 
@@ -1872,13 +1885,14 @@ impl TermWindow {
         let webgpu = match self.webgpu.as_ref() {
             Some(w) => w,
             None => {
-                if !shader_paths.is_empty() {
+                if !shader_paths.is_empty() || !bg_shader_paths.is_empty() {
                     log::warn!(
-                        "postprocess: custom_shaders configured but not using WebGpu frontend; \
+                        "postprocess: shaders configured but not using WebGpu frontend; \
                          shaders will be ignored. Set front_end = \"WebGpu\" to enable."
                     );
                 }
                 self.post_process = None;
+                self.background_post_process = None;
                 return;
             }
         };
@@ -1889,23 +1903,43 @@ impl TermWindow {
         let height = config.height;
         drop(config);
 
-        match PostProcessState::new(&webgpu.device, format, width, height, shader_paths) {
-            Some(state) => {
-                log::info!(
-                    "postprocess: initialized with {} pipeline(s)",
-                    state.pipelines.len()
-                );
-                self.post_process = Some(state);
-                self.last_post_process_time = None;
-                self.post_process_frame = 0;
+        if !shader_paths.is_empty() {
+            match PostProcessState::new(&webgpu.device, format, width, height, shader_paths) {
+                Some(state) => {
+                    log::info!(
+                        "postprocess: initialized with {} pipeline(s)",
+                        state.pipelines.len()
+                    );
+                    self.post_process = Some(state);
+                    self.last_post_process_time = None;
+                    self.post_process_frame = 0;
+                }
+                None => {
+                    log::error!(
+                        "postprocess: failed to create post-process state, falling back to no shaders"
+                    );
+                    self.post_process = None;
+                    self.last_post_process_time = None;
+                    self.post_process_frame = 0;
+                }
             }
-            None => {
-                log::error!(
-                    "postprocess: failed to create post-process state, falling back to no shaders"
-                );
-                self.post_process = None;
-                self.last_post_process_time = None;
-                self.post_process_frame = 0;
+        }
+
+        if !bg_shader_paths.is_empty() {
+            match PostProcessState::new(&webgpu.device, format, width, height, bg_shader_paths) {
+                Some(state) => {
+                    log::info!(
+                        "postprocess: background initialized with {} pipeline(s)",
+                        state.pipelines.len()
+                    );
+                    self.background_post_process = Some(state);
+                }
+                None => {
+                    log::error!(
+                        "postprocess: failed to create background post-process state"
+                    );
+                    self.background_post_process = None;
+                }
             }
         }
     }

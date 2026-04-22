@@ -60,10 +60,11 @@ impl crate::TermWindow {
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
 
-        // When post-processing is active, render layers to the intermediate
-        // texture instead of directly to the surface.
         let has_postprocess = self.post_process.is_some();
-        let render_target_view = if has_postprocess {
+        let has_bg_postprocess = self.background_post_process.is_some();
+
+        // "main_render_target": where composited content goes before final post-process
+        let main_render_target = if has_postprocess {
             &self.post_process.as_ref().unwrap().intermediate_view
         } else {
             &surface_view
@@ -110,7 +111,6 @@ impl crate::TermWindow {
                 label: Some("nearest bind group"),
             });
 
-        let mut cleared = false;
         let foreground_text_hsb = self.config.foreground_text_hsb;
         let foreground_text_hsb = [
             foreground_text_hsb.hue,
@@ -129,98 +129,223 @@ impl crate::TermWindow {
         )
         .to_arrays_transposed();
 
-        for layer in render_state.layers.borrow().iter() {
-            for idx in 0..3 {
-                let vb = &layer.vb.borrow()[idx];
-                let (vertex_count, index_count) = vb.vertex_index_count();
-                let vertex_buffer;
-                let uniforms;
-                if vertex_count > 0 {
-                    let mut vertices = vb.current_vb_mut();
-                    let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                        label: Some("Render Pass"),
-                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                            view: render_target_view,
-                            resolve_target: None,
-                            ops: wgpu::Operations {
-                                load: if cleared {
-                                    wgpu::LoadOp::Load
-                                } else {
-                                    wgpu::LoadOp::Clear(wgpu::Color {
+        // Compute cursor pixel position for post-process shaders
+        let cell_w = self.render_metrics.cell_size.width as f32;
+        let cell_h = self.render_metrics.cell_size.height as f32;
+        let (padding_left, padding_top) = self.padding_left_top();
+        let tab_bar_height = if self.show_tab_bar && !self.config.tab_bar_at_bottom {
+            self.tab_bar_pixel_height().unwrap_or(0.0)
+        } else {
+            0.0
+        };
+        let (cursor_pos, cursor_prev_pos, cursor_move_time) =
+            if let Some(pos) = self.get_panes_to_render().into_iter().find(|p| p.is_active) {
+                let cursor = pos.pane.get_cursor_position();
+                let prev = self.prev_cursor.prev_position();
+                let top = pos.pane.get_dimensions().physical_top;
+                let to_pixel = |x: usize, y: isize| -> [f32; 2] {
+                    [
+                        ((x + pos.left) as f32) * cell_w + padding_left,
+                        ((y + pos.top as isize - top).max(0) as f32) * cell_h
+                            + tab_bar_height
+                            + padding_top,
+                    ]
+                };
+                (
+                    to_pixel(cursor.x, cursor.y),
+                    to_pixel(prev.x, prev.y),
+                    self.prev_cursor
+                        .last_cursor_movement()
+                        .elapsed()
+                        .as_secs_f32(),
+                )
+            } else {
+                ([0.0f32, 0.0], [0.0f32, 0.0], 0.0)
+            };
+
+        // Build the shared PostProcessUniform
+        let now = Instant::now();
+        let time = self.created.elapsed().as_secs_f32();
+        let time_delta = self
+            .last_post_process_time
+            .map(|t| now.duration_since(t).as_secs_f32())
+            .unwrap_or(0.0);
+
+        if has_postprocess || has_bg_postprocess {
+            self.last_post_process_time = Some(now);
+            self.post_process_frame = self.post_process_frame.wrapping_add(1);
+        }
+
+        let pp_uniform = PostProcessUniform {
+            resolution: [
+                self.dimensions.pixel_width as f32,
+                self.dimensions.pixel_height as f32,
+            ],
+            time,
+            time_delta,
+            frame: self.post_process_frame,
+            cell_width: cell_w,
+            cursor_pos,
+            cursor_prev_pos,
+            cursor_move_time,
+            cell_height: cell_h,
+        };
+
+        // Helper closure: draw a single vertex buffer to a target view
+        let draw_vb = |encoder: &mut wgpu::CommandEncoder,
+                       vb: &crate::renderstate::TripleVertexBuffer,
+                       target: &wgpu::TextureView,
+                       cleared: &mut bool| {
+            let (vertex_count, index_count) = vb.vertex_index_count();
+            if vertex_count > 0 {
+                let mut vertices = vb.current_vb_mut();
+                let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("Render Pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: target,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: if *cleared {
+                                wgpu::LoadOp::Load
+                            } else {
+                                wgpu::LoadOp::Clear(wgpu::Color {
+                                    r: 0.,
+                                    g: 0.,
+                                    b: 0.,
+                                    a: 0.,
+                                })
+                            },
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    occlusion_query_set: None,
+                    timestamp_writes: None,
+                });
+                *cleared = true;
+
+                let uniforms = webgpu.create_uniform(ShaderUniform {
+                    foreground_text_hsb,
+                    milliseconds,
+                    projection,
+                });
+
+                render_pass.set_pipeline(&webgpu.render_pipeline);
+                render_pass.set_bind_group(0, &uniforms, &[]);
+                render_pass.set_bind_group(1, &texture_linear_bind_group, &[]);
+                render_pass.set_bind_group(2, &texture_nearest_bind_group, &[]);
+                let vertex_buffer = vertices.webgpu_mut().recreate();
+                vertex_buffer.unmap();
+                render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
+                render_pass
+                    .set_index_buffer(vb.indices.webgpu().slice(..), wgpu::IndexFormat::Uint32);
+                render_pass.draw_indexed(0..index_count as _, 0, 0..1);
+            }
+            vb.next_index();
+        };
+
+        if has_bg_postprocess {
+            // Phase-based rendering: background → bg_pp → text/cursor → final pp
+            let bg_target = &self.background_post_process.as_ref().unwrap().intermediate_view;
+
+            // Phase 1: Draw all idx==0 (backgrounds) to bg_pp intermediate
+            let mut bg_cleared = false;
+            {
+                let layers = render_state.layers.borrow();
+                for layer in layers.iter() {
+                    let vbs = layer.vb.borrow();
+                    draw_vb(&mut encoder, &vbs[0], bg_target, &mut bg_cleared);
+                    // Advance idx 1,2 without drawing (they'll be drawn in Phase 3)
+                    vbs[1].next_index();
+                    vbs[2].next_index();
+                }
+            }
+
+            // Phase 2: Run background post-process shader chain
+            // Reads bg_pp.intermediate, last shader writes to main_render_target
+            if let Some(bg_pp) = &self.background_post_process {
+                webgpu
+                    .queue
+                    .write_buffer(&bg_pp.uniform_buffer, 0, bytemuck::cast_slice(&[pp_uniform]));
+
+                let num = bg_pp.pipelines.len();
+                for (i, pipeline) in bg_pp.pipelines.iter().enumerate() {
+                    let is_last = i == num - 1;
+
+                    let read_bind_group = if i % 2 == 0 {
+                        &bg_pp.bind_group_intermediate
+                    } else {
+                        bg_pp.bind_group_pingpong.as_ref().unwrap()
+                    };
+
+                    let write_view = if is_last {
+                        main_render_target
+                    } else if i % 2 == 0 {
+                        bg_pp.ping_pong_view.as_ref().unwrap()
+                    } else {
+                        &bg_pp.intermediate_view
+                    };
+
+                    let mut render_pass =
+                        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                            label: Some("Background PostProcess Pass"),
+                            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                                view: write_view,
+                                resolve_target: None,
+                                ops: wgpu::Operations {
+                                    load: wgpu::LoadOp::Clear(wgpu::Color {
                                         r: 0.,
                                         g: 0.,
                                         b: 0.,
                                         a: 0.,
-                                    })
+                                    }),
+                                    store: wgpu::StoreOp::Store,
                                 },
-                                store: wgpu::StoreOp::Store,
-                            },
-                        })],
-                        depth_stencil_attachment: None,
-                        occlusion_query_set: None,
-                        timestamp_writes: None,
-                    });
-                    cleared = true;
+                            })],
+                            depth_stencil_attachment: None,
+                            occlusion_query_set: None,
+                            timestamp_writes: None,
+                        });
 
-                    uniforms = webgpu.create_uniform(ShaderUniform {
-                        foreground_text_hsb,
-                        milliseconds,
-                        projection,
-                    });
-
-                    render_pass.set_pipeline(&webgpu.render_pipeline);
-                    render_pass.set_bind_group(0, &uniforms, &[]);
-                    render_pass.set_bind_group(1, &texture_linear_bind_group, &[]);
-                    render_pass.set_bind_group(2, &texture_nearest_bind_group, &[]);
-                    vertex_buffer = vertices.webgpu_mut().recreate();
-                    vertex_buffer.unmap();
-                    render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-                    render_pass
-                        .set_index_buffer(vb.indices.webgpu().slice(..), wgpu::IndexFormat::Uint32);
-                    render_pass.draw_indexed(0..index_count as _, 0, 0..1);
+                    render_pass.set_pipeline(pipeline);
+                    render_pass.set_bind_group(0, read_bind_group, &[]);
+                    render_pass.set_bind_group(1, &bg_pp.uniform_bind_group, &[]);
+                    render_pass.draw(0..3, 0..1);
                 }
+            }
 
-                vb.next_index();
+            // Phase 3: Draw all idx==1,2 (text, cursor) on top of main_render_target
+            let mut main_cleared = true; // bg_pp already wrote to it
+            {
+                let layers = render_state.layers.borrow();
+                for layer in layers.iter() {
+                    let vbs = layer.vb.borrow();
+                    // idx 0 already advanced in Phase 1
+                    draw_vb(&mut encoder, &vbs[1], main_render_target, &mut main_cleared);
+                    draw_vb(&mut encoder, &vbs[2], main_render_target, &mut main_cleared);
+                }
+            }
+        } else {
+            // Original single-pass rendering (no background post-process)
+            let mut cleared = false;
+            let layers = render_state.layers.borrow();
+            for layer in layers.iter() {
+                let vbs = layer.vb.borrow();
+                for idx in 0..3 {
+                    draw_vb(&mut encoder, &vbs[idx], main_render_target, &mut cleared);
+                }
             }
         }
 
-        // Run post-process shader chain if active
+        // Run final post-process shader chain if active
         if let Some(pp) = &self.post_process {
-            // Update the uniform buffer with current frame data
-            let now = Instant::now();
-            let time = self.created.elapsed().as_secs_f32();
-            let time_delta = self
-                .last_post_process_time
-                .map(|t| now.duration_since(t).as_secs_f32())
-                .unwrap_or(0.0);
-            self.last_post_process_time = Some(now);
-            self.post_process_frame = self.post_process_frame.wrapping_add(1);
-
-            let uniform = PostProcessUniform {
-                resolution: [
-                    self.dimensions.pixel_width as f32,
-                    self.dimensions.pixel_height as f32,
-                ],
-                time,
-                time_delta,
-                frame: self.post_process_frame,
-                _padding: [0; 3],
-            };
             webgpu
                 .queue
-                .write_buffer(&pp.uniform_buffer, 0, bytemuck::cast_slice(&[uniform]));
+                .write_buffer(&pp.uniform_buffer, 0, bytemuck::cast_slice(&[pp_uniform]));
 
             let num_pipelines = pp.pipelines.len();
 
             for (i, pipeline) in pp.pipelines.iter().enumerate() {
-                // Determine which texture to read from and which to write to.
-                // Pattern for N shaders:
-                //   shader 0: read intermediate, write to pingpong (or surface if N==1)
-                //   shader 1: read pingpong, write to intermediate (or surface if last)
-                //   shader 2: read intermediate, write to pingpong (or surface if last)
-                //   ...
-                // Even-indexed shaders read from intermediate, odd from pingpong.
-                // The last shader always writes to the surface.
                 let (read_src, write_dst) = ping_pong_targets(i, num_pipelines);
 
                 let read_bind_group = match read_src {
