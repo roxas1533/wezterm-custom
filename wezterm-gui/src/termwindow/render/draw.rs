@@ -255,9 +255,10 @@ impl crate::TermWindow {
                 for layer in layers.iter() {
                     let vbs = layer.vb.borrow();
                     draw_vb(&mut encoder, &vbs[0], bg_target, &mut bg_cleared);
-                    // Advance idx 1,2 without drawing (they'll be drawn in Phase 3)
+                    // Advance idx 1,2,3 without drawing (they'll be drawn in Phase 3)
                     vbs[1].next_index();
                     vbs[2].next_index();
+                    vbs[3].next_index();
                 }
             }
 
@@ -338,6 +339,7 @@ impl crate::TermWindow {
                     // idx 0 already advanced in Phase 1
                     draw_vb(&mut encoder, &vbs[1], main_render_target, &mut main_cleared);
                     draw_vb(&mut encoder, &vbs[2], main_render_target, &mut main_cleared);
+                    draw_vb(&mut encoder, &vbs[3], main_render_target, &mut main_cleared);
                 }
             }
         } else {
@@ -346,7 +348,7 @@ impl crate::TermWindow {
             let layers = render_state.layers.borrow();
             for layer in layers.iter() {
                 let vbs = layer.vb.borrow();
-                for idx in 0..3 {
+                for idx in 0..4 {
                     draw_vb(&mut encoder, &vbs[idx], main_render_target, &mut cleared);
                 }
             }
@@ -505,12 +507,12 @@ impl crate::TermWindow {
         let rapid_blink: ColorEaseUniform = (*self.rapid_blink_state.borrow()).into();
 
         for layer in gl_state.layers.borrow().iter() {
-            for idx in 0..3 {
+            for idx in 0..4 {
                 let vb = &layer.vb.borrow()[idx];
                 let (vertex_count, index_count) = vb.vertex_index_count();
                 if vertex_count > 0 {
                     let vertices = vb.current_vb_mut();
-                    let subpixel_aa = use_subpixel && idx == 1;
+                    let subpixel_aa = use_subpixel && idx == 2;
 
                     let mut uniforms = UniformBuilder::default();
 

@@ -22,7 +22,7 @@ impl crate::TermWindow {
             if border_top > 0.0 {
                 self.filled_rectangle(
                     layers,
-                    1,
+                    2,
                     euclid::rect(0.0, 0.0, width, border_top),
                     self.config
                         .window_frame
@@ -36,7 +36,7 @@ impl crate::TermWindow {
             if border_left > 0.0 {
                 self.filled_rectangle(
                     layers,
-                    1,
+                    2,
                     euclid::rect(0.0, 0.0, border_left, height),
                     self.config
                         .window_frame
@@ -50,7 +50,7 @@ impl crate::TermWindow {
             if border_bottom > 0.0 {
                 self.filled_rectangle(
                     layers,
-                    1,
+                    2,
                     euclid::rect(0.0, height - border_bottom, width, height),
                     self.config
                         .window_frame
@@ -64,7 +64,7 @@ impl crate::TermWindow {
             if border_right > 0.0 {
                 self.filled_rectangle(
                     layers,
-                    1,
+                    2,
                     euclid::rect(width - border_right, 0.0, border_right, height),
                     self.config
                         .window_frame

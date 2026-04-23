@@ -251,7 +251,7 @@ impl crate::TermWindow {
                 let rect = euclid::rect(x, params.top_pixel_y, width, cell_height);
                 if let Some(rect) = rect.intersection(&bounding_rect) {
                     let mut quad = self
-                        .filled_rectangle(layers, 0, rect, bg_color)
+                        .filled_rectangle(layers, 1, rect, bg_color)
                         .context("filled_rectangle")?;
                     quad.set_hsv(hsv);
                 }
@@ -262,7 +262,7 @@ impl crate::TermWindow {
                 // Draw one per cell, otherwise curly underlines
                 // stretch across the whole span
                 for i in 0..cluster_width {
-                    let mut quad = layers.allocate(0).context("layers.allocate(0)")?;
+                    let mut quad = layers.allocate(2).context("layers.allocate(2)")?;
                     let x = gl_x
                         + params.left_pixel_x
                         + if params.use_pixel_positioning {
@@ -350,8 +350,8 @@ impl crate::TermWindow {
 
             if let Some(shape) = cursor_shape {
                 let cursor_layer = match shape {
-                    CursorShape::BlinkingBar | CursorShape::SteadyBar => 2,
-                    _ => 0,
+                    CursorShape::BlinkingBar | CursorShape::SteadyBar => 3,
+                    _ => 1,
                 };
                 let mut quad = layers
                     .allocate(cursor_layer)
@@ -639,7 +639,7 @@ impl crate::TermWindow {
 
                             let texture_rect = texture.texture.to_texture_coords(pixel_rect);
 
-                            let mut quad = layers.allocate(1).context("layers.allocate(1)")?;
+                            let mut quad = layers.allocate(2).context("layers.allocate(2)")?;
                             quad.set_position(
                                 gl_x + range.start,
                                 pos_y + top,

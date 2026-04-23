@@ -31,7 +31,7 @@ impl crate::TermWindow {
         if split.direction == SplitDirection::Horizontal {
             self.filled_rectangle(
                 layers,
-                2,
+                3,
                 euclid::rect(
                     pos_x + (cell_width / 2.0),
                     pos_y - (cell_height / 2.0),
@@ -54,7 +54,7 @@ impl crate::TermWindow {
         } else {
             self.filled_rectangle(
                 layers,
-                2,
+                3,
                 euclid::rect(
                     pos_x - (cell_width / 2.0),
                     pos_y + (cell_height / 2.0),

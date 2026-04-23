@@ -452,7 +452,7 @@ impl TripleVertexBuffer {
 }
 
 pub struct RenderLayer {
-    pub vb: RefCell<[TripleVertexBuffer; 3]>,
+    pub vb: RefCell<[TripleVertexBuffer; 4]>,
     context: RenderContext,
     zindex: i8,
 }
@@ -460,9 +460,10 @@ pub struct RenderLayer {
 impl RenderLayer {
     pub fn new(context: &RenderContext, num_quads: usize, zindex: i8) -> anyhow::Result<Self> {
         let vb = [
-            Self::compute_vertices(context, 32)?,
-            Self::compute_vertices(context, num_quads)?,
-            Self::compute_vertices(context, 32)?,
+            Self::compute_vertices(context, 32)?,   // 0: pane background
+            Self::compute_vertices(context, 32)?,   // 1: cell backgrounds
+            Self::compute_vertices(context, num_quads)?, // 2: text glyphs
+            Self::compute_vertices(context, 32)?,   // 3: cursor/decorations
         ];
 
         Ok(Self {
@@ -488,8 +489,9 @@ impl RenderLayer {
             let layer0 = vbs[0].map().extend_lifetime();
             let layer1 = vbs[1].map().extend_lifetime();
             let layer2 = vbs[2].map().extend_lifetime();
+            let layer3 = vbs[3].map().extend_lifetime();
             TripleLayerQuadAllocator::Gpu(BorrowedLayers {
-                layers: [layer0, layer1, layer2],
+                layers: [layer0, layer1, layer2, layer3],
                 _owner: vbs,
             })
         }
@@ -554,10 +556,10 @@ impl RenderLayer {
 }
 
 pub struct BorrowedLayers {
-    pub layers: [MappedQuads<'static>; 3],
+    pub layers: [MappedQuads<'static>; 4],
 
     // layers references _owner, so it must be dropped after layers.
-    _owner: Ref<'static, [TripleVertexBuffer; 3]>,
+    _owner: Ref<'static, [TripleVertexBuffer; 4]>,
 }
 
 impl TripleLayerQuadAllocatorTrait for BorrowedLayers {

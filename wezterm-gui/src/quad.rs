@@ -313,6 +313,7 @@ pub struct HeapQuadAllocator {
     layer0: Vec<Box<BoxedQuad>>,
     layer1: Vec<Box<BoxedQuad>>,
     layer2: Vec<Box<BoxedQuad>>,
+    layer3: Vec<Box<BoxedQuad>>,
 }
 
 impl std::fmt::Debug for HeapQuadAllocator {
@@ -324,7 +325,7 @@ impl std::fmt::Debug for HeapQuadAllocator {
 impl HeapQuadAllocator {
     pub fn apply_to(&self, other: &mut TripleLayerQuadAllocator) -> anyhow::Result<()> {
         let start = std::time::Instant::now();
-        for (layer_num, quads) in [(0, &self.layer0), (1, &self.layer1), (2, &self.layer2)] {
+        for (layer_num, quads) in [(0, &self.layer0), (1, &self.layer1), (2, &self.layer2), (3, &self.layer3)] {
             for quad in quads {
                 other.extend_with(layer_num, &quad.to_vertices());
             }
@@ -340,6 +341,7 @@ impl TripleLayerQuadAllocatorTrait for HeapQuadAllocator {
             0 => &mut self.layer0,
             1 => &mut self.layer1,
             2 => &mut self.layer2,
+            3 => &mut self.layer3,
             _ => unreachable!(),
         };
 
@@ -358,6 +360,7 @@ impl TripleLayerQuadAllocatorTrait for HeapQuadAllocator {
             0 => &mut self.layer0,
             1 => &mut self.layer1,
             2 => &mut self.layer2,
+            3 => &mut self.layer3,
             _ => unreachable!(),
         };
 
