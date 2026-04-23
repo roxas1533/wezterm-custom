@@ -315,6 +315,20 @@ impl crate::TermWindow {
                 }
             }
 
+            // Copy bg_pp result to prev_frame for feedback BEFORE text is drawn
+            // main_render_target now has the post-processed background
+            if let Some(bg_pp) = &self.background_post_process {
+                if has_postprocess {
+                    // main_render_target is pp.intermediate which has COPY_SRC
+                    let pp = self.post_process.as_ref().unwrap();
+                    encoder.copy_texture_to_texture(
+                        pp.intermediate_texture.as_image_copy(),
+                        bg_pp.prev_frame_texture.as_image_copy(),
+                        pp.intermediate_texture.size(),
+                    );
+                }
+            }
+
             // Phase 3: Draw all idx==1,2 (text, cursor) on top of main_render_target
             let mut main_cleared = true; // bg_pp already wrote to it
             {
@@ -388,22 +402,13 @@ impl crate::TermWindow {
             }
         }
 
-        // Copy intermediate texture to prev_frame for next frame's feedback.
-        // The intermediate texture has COPY_SRC | TEXTURE_BINDING usage.
-        // After the shader chain runs, intermediate still holds the pre-shader content
-        // which is exactly what we rendered this frame.
+        // Copy pp intermediate to prev_frame for feedback (cursor trail etc.)
+        // pp.intermediate holds the full rendered content (bg + text) before final shader
         if let Some(pp) = &self.post_process {
             encoder.copy_texture_to_texture(
                 pp.intermediate_texture.as_image_copy(),
                 pp.prev_frame_texture.as_image_copy(),
                 pp.intermediate_texture.size(),
-            );
-        }
-        if let Some(bg_pp) = &self.background_post_process {
-            encoder.copy_texture_to_texture(
-                bg_pp.intermediate_texture.as_image_copy(),
-                bg_pp.prev_frame_texture.as_image_copy(),
-                bg_pp.intermediate_texture.size(),
             );
         }
 
