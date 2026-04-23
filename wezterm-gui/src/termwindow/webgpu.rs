@@ -381,7 +381,8 @@ impl PostProcessState {
             dimension: wgpu::TextureDimension::D2,
             format,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                | wgpu::TextureUsages::TEXTURE_BINDING,
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
         let intermediate_view =
@@ -553,7 +554,8 @@ impl PostProcessState {
             dimension: wgpu::TextureDimension::D2,
             format,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                | wgpu::TextureUsages::TEXTURE_BINDING,
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
         self.intermediate_view = self
@@ -1867,5 +1869,93 @@ fn fs_postprocess(in: VertexOutput) -> @location(0) vec4<f32> {
 
         drop(data);
         staging_buffer.unmap();
+    }
+
+    #[test]
+    fn test_prev_frame_copy_from_intermediate() {
+        let Some((device, queue)) = create_test_device() else {
+            eprintln!("Skipping test_prev_frame_copy_from_intermediate: no GPU adapter available");
+            return;
+        };
+
+        let width = 4u32;
+        let height = 4u32;
+        let format = wgpu::TextureFormat::Bgra8UnormSrgb;
+
+        // Intermediate texture must have COPY_SRC
+        let intermediate = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Test intermediate"),
+            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            mip_level_count: 1, sample_count: 1,
+            dimension: wgpu::TextureDimension::D2, format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+
+        // prev_frame texture must have COPY_DST
+        let prev_frame = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Test prev_frame"),
+            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            mip_level_count: 1, sample_count: 1,
+            dimension: wgpu::TextureDimension::D2, format,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+
+        // Copy should succeed without panic
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        encoder.copy_texture_to_texture(
+            intermediate.as_image_copy(),
+            prev_frame.as_image_copy(),
+            intermediate.size(),
+        );
+        queue.submit(std::iter::once(encoder.finish()));
+    }
+
+    #[test]
+    #[should_panic(expected = "COPY_SRC")]
+    fn test_prev_frame_copy_fails_without_copy_src() {
+        let Some((device, queue)) = create_test_device() else {
+            eprintln!("Skipping test: no GPU adapter available");
+            // Trigger the expected panic so the test passes when no GPU
+            panic!("COPY_SRC");
+        };
+
+        let width = 4u32;
+        let height = 4u32;
+        let format = wgpu::TextureFormat::Bgra8UnormSrgb;
+
+        // Texture WITHOUT COPY_SRC — this should fail
+        let no_copy_src = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Test no COPY_SRC"),
+            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            mip_level_count: 1, sample_count: 1,
+            dimension: wgpu::TextureDimension::D2, format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+
+        let prev_frame = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Test prev_frame"),
+            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            mip_level_count: 1, sample_count: 1,
+            dimension: wgpu::TextureDimension::D2, format,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+
+        // This should panic because no_copy_src lacks COPY_SRC
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        encoder.copy_texture_to_texture(
+            no_copy_src.as_image_copy(),
+            prev_frame.as_image_copy(),
+            no_copy_src.size(),
+        );
+        queue.submit(std::iter::once(encoder.finish()));
     }
 }

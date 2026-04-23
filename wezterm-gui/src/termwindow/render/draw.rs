@@ -388,20 +388,22 @@ impl crate::TermWindow {
             }
         }
 
-        // Copy current surface to prev_frame textures for next frame's feedback
-        // The surface texture has COPY_SRC usage, prev_frame has COPY_DST
+        // Copy intermediate texture to prev_frame for next frame's feedback.
+        // The intermediate texture has COPY_SRC | TEXTURE_BINDING usage.
+        // After the shader chain runs, intermediate still holds the pre-shader content
+        // which is exactly what we rendered this frame.
         if let Some(pp) = &self.post_process {
             encoder.copy_texture_to_texture(
-                output.texture.as_image_copy(),
+                pp.intermediate_texture.as_image_copy(),
                 pp.prev_frame_texture.as_image_copy(),
-                output.texture.size(),
+                pp.intermediate_texture.size(),
             );
         }
         if let Some(bg_pp) = &self.background_post_process {
             encoder.copy_texture_to_texture(
-                output.texture.as_image_copy(),
+                bg_pp.intermediate_texture.as_image_copy(),
                 bg_pp.prev_frame_texture.as_image_copy(),
-                output.texture.size(),
+                bg_pp.intermediate_texture.size(),
             );
         }
 
