@@ -310,6 +310,7 @@ impl crate::TermWindow {
                     render_pass.set_pipeline(pipeline);
                     render_pass.set_bind_group(0, read_bind_group, &[]);
                     render_pass.set_bind_group(1, &bg_pp.uniform_bind_group, &[]);
+                    render_pass.set_bind_group(2, &bg_pp.bind_group_prev_frame, &[]);
                     render_pass.draw(0..3, 0..1);
                 }
             }
@@ -382,8 +383,26 @@ impl crate::TermWindow {
                 render_pass.set_pipeline(pipeline);
                 render_pass.set_bind_group(0, read_bind_group, &[]);
                 render_pass.set_bind_group(1, &pp.uniform_bind_group, &[]);
+                render_pass.set_bind_group(2, &pp.bind_group_prev_frame, &[]);
                 render_pass.draw(0..3, 0..1);
             }
+        }
+
+        // Copy current surface to prev_frame textures for next frame's feedback
+        // The surface texture has COPY_SRC usage, prev_frame has COPY_DST
+        if let Some(pp) = &self.post_process {
+            encoder.copy_texture_to_texture(
+                output.texture.as_image_copy(),
+                pp.prev_frame_texture.as_image_copy(),
+                output.texture.size(),
+            );
+        }
+        if let Some(bg_pp) = &self.background_post_process {
+            encoder.copy_texture_to_texture(
+                output.texture.as_image_copy(),
+                bg_pp.prev_frame_texture.as_image_copy(),
+                output.texture.size(),
+            );
         }
 
         // submit will accept anything that implements IntoIter

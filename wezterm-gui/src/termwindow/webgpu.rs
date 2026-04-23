@@ -45,6 +45,7 @@ pub struct PostProcessState {
     pub sampler: wgpu::Sampler,
     pub bind_group_layout: wgpu::BindGroupLayout,
     pub _uniform_bind_group_layout: wgpu::BindGroupLayout,
+    pub prev_frame_bind_group_layout: wgpu::BindGroupLayout,
     pub bind_group_intermediate: wgpu::BindGroup,
     pub bind_group_pingpong: Option<wgpu::BindGroup>,
     pub uniform_buffer: wgpu::Buffer,
@@ -52,6 +53,10 @@ pub struct PostProcessState {
     pub pipelines: Vec<wgpu::RenderPipeline>,
     pub ping_pong_texture: Option<wgpu::Texture>,
     pub ping_pong_view: Option<wgpu::TextureView>,
+    /// Previous frame texture for feedback effects
+    pub prev_frame_texture: wgpu::Texture,
+    pub prev_frame_view: wgpu::TextureView,
+    pub bind_group_prev_frame: wgpu::BindGroup,
     /// The surface format used when these resources were created,
     /// so we can detect if it changes on resize.
     pub format: wgpu::TextureFormat,
@@ -81,6 +86,9 @@ struct VertexOutput {
 @group(0) @binding(1) var screen_sampler: sampler;
 
 @group(1) @binding(0) var<uniform> pp: PostProcessUniform;
+
+@group(2) @binding(0) var prev_frame_texture: texture_2d<f32>;
+@group(2) @binding(1) var prev_frame_sampler: sampler;
 
 @vertex
 fn vs_postprocess(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
@@ -149,6 +157,7 @@ fn compile_postprocess_shader(
     format: wgpu::TextureFormat,
     texture_bind_group_layout: &wgpu::BindGroupLayout,
     uniform_bind_group_layout: &wgpu::BindGroupLayout,
+    prev_frame_bind_group_layout: &wgpu::BindGroupLayout,
 ) -> Option<wgpu::RenderPipeline> {
     let raw_source = match std::fs::read(path) {
         Ok(bytes) => bytes,
@@ -183,10 +192,10 @@ fn compile_postprocess_shader(
         return None;
     }
 
-    // Build the pipeline layout: group 0 = texture+sampler, group 1 = uniform
+    // Build the pipeline layout: group 0 = texture+sampler, group 1 = uniform, group 2 = prev frame
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some(&format!("PostProcess Pipeline Layout: {}", path.display())),
-        bind_group_layouts: &[texture_bind_group_layout, uniform_bind_group_layout],
+        bind_group_layouts: &[texture_bind_group_layout, uniform_bind_group_layout, prev_frame_bind_group_layout],
         push_constant_ranges: &[],
     });
 
@@ -306,6 +315,30 @@ impl PostProcessState {
                 label: Some("PostProcess uniform bind group layout"),
             });
 
+        // Bind group layout for previous frame texture (group 2)
+        let prev_frame_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            multisampled: false,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+                label: Some("PostProcess prev frame bind group layout"),
+            });
+
         // Compile all shader pipelines, skipping any that fail
         let pipelines: Vec<wgpu::RenderPipeline> = shader_paths
             .iter()
@@ -316,6 +349,7 @@ impl PostProcessState {
                     format,
                     &texture_bind_group_layout,
                     &uniform_bind_group_layout,
+                    &prev_frame_bind_group_layout,
                 )
             })
             .collect();
@@ -439,12 +473,48 @@ impl PostProcessState {
             (None, None, None)
         };
 
+        // Previous frame texture for feedback effects
+        let prev_frame_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("PostProcess Previous Frame Texture"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let prev_frame_view =
+            prev_frame_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let bind_group_prev_frame =
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                layout: &prev_frame_bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&prev_frame_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&sampler),
+                    },
+                ],
+                label: Some("PostProcess Previous Frame Bind Group"),
+            });
+
         Some(PostProcessState {
             intermediate_texture,
             intermediate_view,
             sampler,
             bind_group_layout: texture_bind_group_layout,
             _uniform_bind_group_layout: uniform_bind_group_layout,
+            prev_frame_bind_group_layout,
             bind_group_intermediate,
             bind_group_pingpong,
             uniform_buffer,
@@ -452,6 +522,9 @@ impl PostProcessState {
             pipelines,
             ping_pong_texture,
             ping_pong_view,
+            prev_frame_texture,
+            prev_frame_view,
+            bind_group_prev_frame,
             format,
         })
     }
@@ -543,6 +616,42 @@ impl PostProcessState {
             self.ping_pong_texture = Some(pp_texture);
             self.ping_pong_view = Some(pp_view);
         }
+
+        // Recreate previous frame texture
+        self.prev_frame_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("PostProcess Previous Frame Texture"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        self.prev_frame_view = self
+            .prev_frame_texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+
+        self.bind_group_prev_frame =
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                layout: &self.prev_frame_bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&self.prev_frame_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&self.sampler),
+                    },
+                ],
+                label: Some("PostProcess Previous Frame Bind Group"),
+            });
 
         true
     }
@@ -1156,7 +1265,7 @@ fn fs_postprocess(in: VertexOutput) -> @location(0) vec4<f32> {
 
     fn create_test_bind_group_layouts(
         device: &wgpu::Device,
-    ) -> (wgpu::BindGroupLayout, wgpu::BindGroupLayout) {
+    ) -> (wgpu::BindGroupLayout, wgpu::BindGroupLayout, wgpu::BindGroupLayout) {
         let texture_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             entries: &[
                 wgpu::BindGroupLayoutEntry {
@@ -1193,7 +1302,29 @@ fn fs_postprocess(in: VertexOutput) -> @location(0) vec4<f32> {
             label: Some("Test uniform BGL"),
         });
 
-        (texture_bgl, uniform_bgl)
+        let prev_frame_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        multisampled: false,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+            label: Some("Test prev frame BGL"),
+        });
+
+        (texture_bgl, uniform_bgl, prev_frame_bgl)
     }
 
     fn create_test_device() -> Option<(wgpu::Device, wgpu::Queue)> {
@@ -1253,9 +1384,9 @@ fn fs_postprocess(in: VertexOutput) -> @location(0) vec4<f32> {
         .unwrap();
 
         let format = wgpu::TextureFormat::Bgra8UnormSrgb;
-        let (texture_bgl, uniform_bgl) = create_test_bind_group_layouts(&device);
+        let (texture_bgl, uniform_bgl, prev_frame_bgl) = create_test_bind_group_layouts(&device);
 
-        let result = compile_postprocess_shader(&device, &shader_path, format, &texture_bgl, &uniform_bgl);
+        let result = compile_postprocess_shader(&device, &shader_path, format, &texture_bgl, &uniform_bgl, &prev_frame_bgl);
         assert!(result.is_some(), "Valid shader should compile successfully");
     }
 
@@ -1271,9 +1402,9 @@ fn fs_postprocess(in: VertexOutput) -> @location(0) vec4<f32> {
         std::fs::write(&shader_path, "this is not valid WGSL at all!!!").unwrap();
 
         let format = wgpu::TextureFormat::Bgra8UnormSrgb;
-        let (texture_bgl, uniform_bgl) = create_test_bind_group_layouts(&device);
+        let (texture_bgl, uniform_bgl, prev_frame_bgl) = create_test_bind_group_layouts(&device);
 
-        let result = compile_postprocess_shader(&device, &shader_path, format, &texture_bgl, &uniform_bgl);
+        let result = compile_postprocess_shader(&device, &shader_path, format, &texture_bgl, &uniform_bgl, &prev_frame_bgl);
         assert!(result.is_none(), "Invalid shader should return None");
     }
 
@@ -1299,9 +1430,9 @@ fn wrong_name(in: VertexOutput) -> @location(0) vec4<f32> {
         .unwrap();
 
         let format = wgpu::TextureFormat::Bgra8UnormSrgb;
-        let (texture_bgl, uniform_bgl) = create_test_bind_group_layouts(&device);
+        let (texture_bgl, uniform_bgl, prev_frame_bgl) = create_test_bind_group_layouts(&device);
 
-        let result = compile_postprocess_shader(&device, &shader_path, format, &texture_bgl, &uniform_bgl);
+        let result = compile_postprocess_shader(&device, &shader_path, format, &texture_bgl, &uniform_bgl, &prev_frame_bgl);
         assert!(result.is_none(), "Missing entry point should return None");
     }
 
@@ -1313,7 +1444,7 @@ fn wrong_name(in: VertexOutput) -> @location(0) vec4<f32> {
         };
 
         let format = wgpu::TextureFormat::Bgra8UnormSrgb;
-        let (texture_bgl, uniform_bgl) = create_test_bind_group_layouts(&device);
+        let (texture_bgl, uniform_bgl, prev_frame_bgl) = create_test_bind_group_layouts(&device);
 
         let result = compile_postprocess_shader(
             &device,
@@ -1321,6 +1452,7 @@ fn wrong_name(in: VertexOutput) -> @location(0) vec4<f32> {
             format,
             &texture_bgl,
             &uniform_bgl,
+            &prev_frame_bgl,
         );
         assert!(result.is_none(), "Missing file should return None");
     }
@@ -1554,7 +1686,7 @@ fn fs_postprocess(in: VertexOutput) -> @location(0) vec4<f32> {
             render_target.create_view(&wgpu::TextureViewDescriptor::default());
 
         // --- Bind group layouts ---
-        let (texture_bgl, uniform_bgl) = create_test_bind_group_layouts(&device);
+        let (texture_bgl, uniform_bgl, prev_frame_bgl) = create_test_bind_group_layouts(&device);
 
         // --- Sampler ---
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -1614,8 +1746,27 @@ fn fs_postprocess(in: VertexOutput) -> @location(0) vec4<f32> {
         .unwrap();
 
         let pipeline =
-            compile_postprocess_shader(&device, &shader_path, format, &texture_bgl, &uniform_bgl)
+            compile_postprocess_shader(&device, &shader_path, format, &texture_bgl, &uniform_bgl, &prev_frame_bgl)
                 .expect("Inversion shader should compile");
+
+        // --- Dummy prev frame bind group ---
+        let dummy_prev_frame_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Test prev frame texture"),
+            size: wgpu::Extent3d { width: tex_width, height: tex_height, depth_or_array_layers: 1 },
+            mip_level_count: 1, sample_count: 1,
+            dimension: wgpu::TextureDimension::D2, format,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let dummy_prev_frame_view = dummy_prev_frame_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let prev_frame_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Test prev frame bind group"),
+            layout: &prev_frame_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&dummy_prev_frame_view) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&sampler) },
+            ],
+        });
 
         // --- Render pass ---
         let mut encoder =
@@ -1638,6 +1789,7 @@ fn fs_postprocess(in: VertexOutput) -> @location(0) vec4<f32> {
             rpass.set_pipeline(&pipeline);
             rpass.set_bind_group(0, &texture_bind_group, &[]);
             rpass.set_bind_group(1, &uniform_bind_group, &[]);
+            rpass.set_bind_group(2, &prev_frame_bind_group, &[]);
             rpass.draw(0..3, 0..1);
         }
         queue.submit(std::iter::once(encoder.finish()));
