@@ -116,10 +116,12 @@ impl crate::TermWindow {
         metrics::histogram!("gui.paint.impl.rate").record(1.);
 
         // When post-process shaders are active, schedule continuous redraws
-        // so that time-based shader effects animate smoothly
+        // so that time-based shader effects animate smoothly.
+        // Reduce FPS when unfocused to save resources.
         if self.post_process.is_some() || self.background_post_process.is_some() {
             let mut anim = self.has_animation.borrow_mut();
-            let next = Instant::now() + Duration::from_millis(16);
+            let interval_ms = if self.focused.is_some() { 16 } else { 100 };
+            let next = Instant::now() + Duration::from_millis(interval_ms);
             match *anim {
                 Some(existing) if existing <= next => {}
                 _ => {
@@ -128,10 +130,13 @@ impl crate::TermWindow {
             }
         }
 
-        // If self.has_animation is some, then the last render detected
-        // image attachments with multiple frames, so we also need to
-        // invalidate the viewport when the next frame is due
-        if self.focused.is_some() {
+        // Schedule the next animation frame.
+        // Continue scheduling even when unfocused (at lower rate via interval above)
+        // so that shader-based effects don't completely freeze.
+        let should_schedule = self.focused.is_some()
+            || self.post_process.is_some()
+            || self.background_post_process.is_some();
+        if should_schedule {
             if let Some(next_due) = *self.has_animation.borrow() {
                 let prior = self.scheduled_animation.borrow_mut().take();
                 match prior {
